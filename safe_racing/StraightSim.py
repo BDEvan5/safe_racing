@@ -51,8 +51,9 @@ class StraightAngleSim:
         return self.state
 
     def render(self, axis):
-        axis.set_xlim(0, 6)
-        axis.set_ylim(-0.5, 1.5)
+        axis.set_xlim(-1, 6)
+        axis.set_ylim(-1, 6)
+        # axis.set_ylim(-0.5, 1.5)
 
         history = np.array(self.history)
         axis.plot(history[:, 0], history[:, 1], 'b-')
@@ -103,11 +104,16 @@ def do_lines_intersect(line1, line2):
     return True
 
 class SafetyMask:
-    def __init__(self, max_steer, dynamics_fcn, line1, line2) -> None:
+    def __init__(self, max_steer, dynamics_fcn, line_l, line_r) -> None:
         self.max_steer = max_steer
         self.dynamics_fcn = dynamics_fcn
-        self.line1 = line1
-        self.line2 = line2
+        self.line_l = np.array(line_l)
+        self.line_r = np.array(line_r)
+        #TODO: since the lines are parallel, only a single angle is required
+        self.a_l = np.arctan2(line_l[1][1] - line_l[0][1], line_l[1][0] - line_l[0][0])
+        self.a_r = np.arctan2(line_r[1][1] - line_r[0][1], line_r[1][0] - line_r[0][0])
+        self.perpendicular_l = self.a_l - np.pi/2
+        self.perpendicular_r = self.a_r + np.pi/2
 
         self.radius = L / np.tan(max_steer) 
 
@@ -127,10 +133,20 @@ class SafetyMask:
         new_state = self.dynamics_fcn(state, action)
         # print(f"Safety: {state} -> {new_state}")
 
-        cx_r = new_state[0] + self.radius * np.cos(np.pi/2 - new_state[2])
-        cy_r = new_state[1] - self.radius * np.sin(np.pi/2 - new_state[2])
+        angle_array = self.radius * np.array([-np.cos(np.pi/2 - new_state[2]), np.sin(np.pi/2 - new_state[2])])
+        centre_l = new_state[0:2] + angle_array
+        centre_r = new_state[0:2] - angle_array
+
+        cx_l, cy_l = centre_l
+        cx_r, cy_r = centre_r
+
         cx_l = new_state[0] - self.radius * np.cos(np.pi/2 - new_state[2])
         cy_l = new_state[1] + self.radius * np.sin(np.pi/2 - new_state[2])
+        cx_r = new_state[0] + self.radius * np.cos(np.pi/2 - new_state[2])
+        cy_r = new_state[1] - self.radius * np.sin(np.pi/2 - new_state[2])
+
+        tangent_pt_l = np.array([cx_l, cy_l]) + self.radius * np.array([np.cos(self.perpendicular_l), np.sin(self.perpendicular_l)])
+        tangent_pt_r = np.array([cx_r, cy_r]) + self.radius * np.array([np.cos(self.perpendicular_r), np.sin(self.perpendicular_r)])
 
         max_y_r = cy_r + self.radius 
         min_y_l = cy_l - self.radius
@@ -149,27 +165,32 @@ class SafetyMask:
 
 
         state_line = [[state[0], state[1]], [new_state[0], new_state[1]]]
-        if do_lines_intersect(self.line1, state_line):
-            print("Crash with line 1")
+        if do_lines_intersect(self.line_l, state_line):
+            print("Projected crash with line 1")
             return -self.max_steer
-        elif do_lines_intersect(self.line2, state_line):
-            print("Crash with line 2")
+        elif do_lines_intersect(self.line_r, state_line):
+            print("Projected with line 2")
             return self.max_steer
 
-        axis.plot([cx_l, cx_l], [min_y_l, cy_l], 'g-')
-        if cx_r > new_state[0] and new_state[1] > 0.5: #! this 0.5 is magic and must be removed
+        axis.plot([cx_l, tangent_pt_l[0]], [cy_l, tangent_pt_l[1]], 'g-')
+        axis.plot([cx_r, tangent_pt_r[0]], [cy_r, tangent_pt_r[1]], 'g-')
+        axis.plot(tangent_pt_l[0], tangent_pt_l[1], 'go')
+        axis.plot(tangent_pt_r[0], tangent_pt_r[1], 'go')
+        # if cx_r > new_state[0]: #! this 0.5 is magic and must be removed
             # the centre to extreme point.
-            if do_lines_intersect(self.line1, [[cx_r, cy_r], [cx_r, max_y_r]]):
-                print("Unsafe - right")
-                axis.text(state[0]+2, 0, "Unsafe - right")
-                return -self.max_steer
+        radial_line = [centre_l, tangent_pt_l]
+        if do_lines_intersect(self.line_r, radial_line):
+            print("Unsafe - right")
+            axis.text(state[0]+2, 0, "Unsafe - right")
+            return self.max_steer
 
-        elif cx_l > new_state[0] and new_state[1] < 0.5:
+        # elif cx_l > new_state[0]:
             # print(f"Checking for left intersection...... {cx_l}, {min_y_l}")
-            if do_lines_intersect(self.line2, [[cx_l, min_y_l], [cx_l, cy_l]]):
-                print("Unsafe - left")
-                axis.text(state[0]+2, 0, "Unsafe - left")
-                return self.max_steer
+        radial_line = [centre_r, tangent_pt_r]
+        if do_lines_intersect(self.line_l, radial_line):
+            print("Unsafe - left")
+            axis.text(state[0]+2, 0, "Unsafe - left")
+            return -self.max_steer
 
         axis.text(state[0]+2, 0, "Safe")
         return action
@@ -177,21 +198,23 @@ class SafetyMask:
 
 def run_test():
     max_steer = 0.4
-    line1 = [[0, 0], [5, 0]]
-    line2 = [[0, 1], [5, 1]]
-    sim = StraightAngleSim(line1, line2)
-    supervisor = SafetyMask(max_steer, state_update, line2, line1)
+    # line1 = [[0, 0], [5, 0]]
+    # line2 = [[0, 1], [5, 1]]
+    line_l = [[0, 1], [4, 5]]
+    line_r = [[0, 0], [4, 4]]
+    sim = StraightAngleSim(line_l, line_r)
+    supervisor = SafetyMask(max_steer, state_update, line_l, line_r)
 
     actions = []
     safe_actions = []
     state = sim.reset()
-    fig = plt.figure(figsize=(9, 6))
-    a1 = plt.subplot(2, 1, 1)
-    a3 = plt.subplot(2, 1, 2)
-    for i in range(100):
+    fig = plt.figure(figsize=(9, 9))
+    a1 = plt.subplot(1, 1, 1)
+    # a3 = plt.subplot(2, 1, 2)
+    for i in range(80):
 
-        # action = np.random.uniform(-max_steer, max_steer)
-        action = -max_steer 
+        action = np.random.uniform(-max_steer, max_steer)
+        # action = max_steer 
 
         safe_action = supervisor.enforce_safety(state, action, a1)
         actions.append(action)
@@ -200,12 +223,13 @@ def run_test():
 
         sim.render(a1)
 
-        a3.cla()
-        a3.plot(actions, 'b-')
-        a3.plot(safe_actions, 'r-')
-        a3.grid(True)
-        a3.set_xlim(max(0, len(actions)-20), len(actions)+5)
+        # a3.cla()
+        # a3.plot(actions, 'b-')
+        # a3.plot(safe_actions, 'r-')
+        # a3.grid(True)
+        # a3.set_xlim(max(0, len(actions)-20), len(actions)+5)
 
+        plt.tight_layout()
         plt.savefig(f"Data/History_{i}.svg")
         # plt.pause(0.5)
         # plt.pause(0.0001)
