@@ -15,32 +15,44 @@ def state_update(state, action):
     return np.array([x, y, theta])
 
 
-class StraightSim:
-    def __init__(self, track_width) -> None:
+class StraightAngleSim:
+    def __init__(self, line1, line2) -> None:
         self.state = np.zeros(3)
-        self.history = [self.state]
-        self.track_width = track_width
+        self.history = []
+        self.l1s = line1[0]
+        self.l1e = line1[1]
+        self.l2s = line2[0]
+        self.l2e = line2[1]
 
     def update(self, action):
         self.state = state_update(self.state, action)
+        # print(f"Simulator: {self.history[-1]} -> {self.state}")
         self.history.append(self.state)
 
-        if self.state[1] > self.track_width or self.state[1] < - self.track_width:
-            print(f"Massive Crash Happened!!!!!")
+        if self.check_done():
+            print(f"Massive Crash Happened!!!!! {self.state}")
             self.history.pop()
             return self.reset()
 
         return self.state
     
+    def check_done(self):
+        prev_state = self.history[-2][:2]
+        if do_lines_intersect([self.l1s, self.l1e], [prev_state, self.state[:2]]):
+            return True
+        elif do_lines_intersect([self.l2s, self.l2e], [prev_state, self.state[:2]]):
+            return True
+        return False
     
     def reset(self):
         self.state = np.zeros(3)
+        self.state[1] = 0.5
+        self.history.append(self.state)
         return self.state
 
     def render(self, axis):
-        axis.cla()
-        axis.set_xlim(self.state[0]-4, self.state[0]+4)
-        axis.set_ylim(-self.track_width*1.2, self.track_width*1.2)
+        axis.set_xlim(0, 6)
+        axis.set_ylim(-0.5, 1.5)
 
         history = np.array(self.history)
         axis.plot(history[:, 0], history[:, 1], 'b-')
@@ -48,15 +60,54 @@ class StraightSim:
         axis.plot(self.state[0], self.state[1], 'ro')
         axis.set_aspect('equal')
 
-        axis.plot([0, 100], [self.track_width, self.track_width], '--', color='black')
-        axis.plot([0, 100], [-self.track_width, -self.track_width], '--', color='black')
+        axis.plot([self.l1s[0], self.l1e[0]], [self.l1s[1], self.l1e[1]], '--', color='black')
+        axis.plot([self.l2s[0], self.l2e[0]], [self.l2s[1], self.l2e[1]], '--', color='black')
 
+def do_lines_intersect(line1, line2):
+    x1, y1 = line1[0]
+    x2, y2 = line1[1]
+    x3, y3 = line2[0]
+    x4, y4 = line2[1]
+    # Check if the lines are vertical
+    if x1 == x2 and x3 == x4:
+        return False
+    elif x1 == x2:
+        m2 = (y4 - y3) / (x4 - x3)
+        b2 = y3 - m2 * x3
+        x = x1
+        y = m2 * x + b2
+    elif x3 == x4:
+        m1 = (y2 - y1) / (x2 - x1)
+        b1 = y1 - m1 * x1
+        x = x3
+        y = m1 * x + b1
+    else:
+        # Calculate the slopes and y-intercepts of the two lines
+        m1 = (y2 - y1) / (x2 - x1)
+        b1 = y1 - m1 * x1
+        m2 = (y4 - y3) / (x4 - x3)
+        b2 = y3 - m2 * x3
+        # Check if the lines are parallel
+        if m1 == m2:
+            return False
+        # Calculate the intersection point of the two lines
+        x = (b2 - b1) / (m1 - m2)
+        y = m1 * x + b1
+    # Check if the intersection point is within the line segments
+    if (x < min(x1, x2) or x > max(x1, x2) or
+        x < min(x3, x4) or x > max(x3, x4)):
+        return False
+    if (y < min(y1, y2) or y > max(y1, y2) or
+        y < min(y3, y4) or y > max(y3, y4)):
+        return False
+    return True
 
 class SafetyMask:
-    def __init__(self, max_steer, dynamics_fcn, track_width) -> None:
+    def __init__(self, max_steer, dynamics_fcn, line1, line2) -> None:
         self.max_steer = max_steer
         self.dynamics_fcn = dynamics_fcn
-        self.track_width = track_width *0.9
+        self.line1 = line1
+        self.line2 = line2
 
         self.radius = L / np.tan(max_steer) 
 
@@ -74,8 +125,7 @@ class SafetyMask:
 
     def enforce_safety(self, state, action, axis):        
         new_state = self.dynamics_fcn(state, action)
-        ns_l = self.dynamics_fcn(state, -self.max_steer)
-        ns_r = self.dynamics_fcn(state, self.max_steer)
+        # print(f"Safety: {state} -> {new_state}")
 
         cx_r = new_state[0] + self.radius * np.cos(np.pi/2 - new_state[2])
         cy_r = new_state[1] - self.radius * np.sin(np.pi/2 - new_state[2])
@@ -86,10 +136,6 @@ class SafetyMask:
         min_y_l = cy_l - self.radius
 
         axis.cla()
-        self.plot_extra_circles(ns_l, axis)
-        self.plot_extra_circles(ns_r, axis)
-        axis.set_xlim(state[0]-4, state[0]+4)
-        axis.set_ylim(-self.track_width*1.2, self.track_width*1.2)
 
         circle = plt.Circle((cx_r, cy_r), self.radius, fill=False, linewidth=2)
         axis.add_artist(circle)
@@ -99,58 +145,58 @@ class SafetyMask:
         axis.plot(state[0], state[1], 'ro')
         axis.plot(new_state[0], new_state[1], 'go')
 
-        axis.plot([0, 100], [self.track_width, self.track_width], '--', color='black')
-        axis.plot([0, 100], [-self.track_width, -self.track_width], '--', color='black')
         axis.set_aspect('equal')
 
 
-
-        if new_state[1] > self.track_width:
-            print("Over bounds!")
+        state_line = [[state[0], state[1]], [new_state[0], new_state[1]]]
+        if do_lines_intersect(self.line1, state_line):
+            print("Crash with line 1")
             return -self.max_steer
-        if new_state[1] < -self.track_width:
-            print("Under bounds!")
+        elif do_lines_intersect(self.line2, state_line):
+            print("Crash with line 2")
             return self.max_steer
 
-        if max_y_r > self.track_width and cx_r > new_state[0] and new_state[1] > 0:
-            print("Correcting unsafe action - RIGHT")
-            axis.text(state[0]+2, 0, "Unsafe - right")
-            return -self.max_steer 
-        elif min_y_l < -self.track_width and cx_l > new_state[0] and new_state[1] < 0:
-            print("Correcting unsafe action - LEFT")
-            axis.text(state[0]+2, 0, "Unsafe - left")
-            return self.max_steer
-        else:
-            axis.text(state[0]+2, 0, "Safe")
-            return action
+        axis.plot([cx_l, cx_l], [min_y_l, cy_l], 'g-')
+        if cx_r > new_state[0] and new_state[1] > 0.5: #! this 0.5 is magic and must be removed
+            # the centre to extreme point.
+            if do_lines_intersect(self.line1, [[cx_r, cy_r], [cx_r, max_y_r]]):
+                print("Unsafe - right")
+                axis.text(state[0]+2, 0, "Unsafe - right")
+                return -self.max_steer
 
-    # def render(self, axis):
+        elif cx_l > new_state[0] and new_state[1] < 0.5:
+            # print(f"Checking for left intersection...... {cx_l}, {min_y_l}")
+            if do_lines_intersect(self.line2, [[cx_l, min_y_l], [cx_l, cy_l]]):
+                print("Unsafe - left")
+                axis.text(state[0]+2, 0, "Unsafe - left")
+                return self.max_steer
+
+        axis.text(state[0]+2, 0, "Safe")
+        return action
 
 
 def run_test():
-    track_width = 0.5 # m on each side of 0 center
     max_steer = 0.4
-    sim = StraightSim(track_width)
-    supervisor = SafetyMask(max_steer, state_update, track_width)
+    line1 = [[0, 0], [5, 0]]
+    line2 = [[0, 1], [5, 1]]
+    sim = StraightAngleSim(line1, line2)
+    supervisor = SafetyMask(max_steer, state_update, line2, line1)
 
     actions = []
     safe_actions = []
     state = sim.reset()
     fig = plt.figure(figsize=(9, 6))
-    a1 = plt.subplot(3, 1, 1)
-    a2 = plt.subplot(3, 1, 2)
-    a3 = plt.subplot(3, 1, 3)
-    for i in range(300):
+    a1 = plt.subplot(2, 1, 1)
+    a3 = plt.subplot(2, 1, 2)
+    for i in range(100):
 
-        action = np.random.uniform(-max_steer, max_steer)
-        # action = -max_steer 
+        # action = np.random.uniform(-max_steer, max_steer)
+        action = -max_steer 
 
-        safe_action = supervisor.enforce_safety(state, action, a2)
+        safe_action = supervisor.enforce_safety(state, action, a1)
         actions.append(action)
         safe_actions.append(safe_action)
         state = sim.update(safe_action)
-        if state[1] > track_width*0.9 or state[1] < -track_width*0.9:
-            print(f"Crashing....")
 
         sim.render(a1)
 
