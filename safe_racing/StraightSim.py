@@ -26,7 +26,6 @@ class StraightAngleSim:
 
     def update(self, action):
         self.state = state_update(self.state, action)
-        # print(f"Simulator: {self.history[-1]} -> {self.state}")
         self.history.append(self.state)
 
         if self.check_done():
@@ -53,7 +52,6 @@ class StraightAngleSim:
     def render(self, axis):
         axis.set_xlim(-1, 6)
         axis.set_ylim(-1, 6)
-        # axis.set_ylim(-0.5, 1.5)
 
         history = np.array(self.history)
         axis.plot(history[:, 0], history[:, 1], 'b-')
@@ -103,19 +101,26 @@ def do_lines_intersect(line1, line2):
         return False
     return True
 
+
+
 class SafetyMask:
     def __init__(self, max_steer, dynamics_fcn, line_l, line_r) -> None:
         self.max_steer = max_steer
         self.dynamics_fcn = dynamics_fcn
-        self.line_l = np.array(line_l)
-        self.line_r = np.array(line_r)
-        #TODO: since the lines are parallel, only a single angle is required
-        self.a_l = np.arctan2(line_l[1][1] - line_l[0][1], line_l[1][0] - line_l[0][0])
-        self.a_r = np.arctan2(line_r[1][1] - line_r[0][1], line_r[1][0] - line_r[0][0])
-        self.perpendicular_l = self.a_l - np.pi/2
-        self.perpendicular_r = self.a_r + np.pi/2
-
         self.radius = L / np.tan(max_steer) 
+
+        self.line_l = np.array(line_l, dtype=float)
+        self.line_r = np.array(line_r, dtype=float)
+        #TODO: since the lines are parallel, only a single angle is required
+        a_l = np.arctan2(line_l[1][1] - line_l[0][1], line_l[1][0] - line_l[0][0])
+        a_r = np.arctan2(line_r[1][1] - line_r[0][1], line_r[1][0] - line_r[0][0])
+        self.perpendicular_l = a_l - np.pi/2
+        self.perpendicular_r = a_r + np.pi/2
+        self.tangent_offset_l = self.radius * np.array([np.cos(self.perpendicular_l), np.sin(self.perpendicular_l)])
+        self.tangent_offset_r = self.radius * np.array([np.cos(self.perpendicular_r), np.sin(self.perpendicular_r)])
+
+        self.line_l[1] += self.radius * np.array([np.cos(a_l), np.sin(a_l)]) 
+        self.line_r[1] += self.radius * np.array([np.cos(a_r), np.sin(a_r)])
 
     def plot_extra_circles(self, ns, axis):
         cx_r = ns[0] + self.radius * np.cos(np.pi/2 - ns[2])
@@ -137,25 +142,14 @@ class SafetyMask:
         centre_l = new_state[0:2] + angle_array
         centre_r = new_state[0:2] - angle_array
 
-        cx_l, cy_l = centre_l
-        cx_r, cy_r = centre_r
-
-        cx_l = new_state[0] - self.radius * np.cos(np.pi/2 - new_state[2])
-        cy_l = new_state[1] + self.radius * np.sin(np.pi/2 - new_state[2])
-        cx_r = new_state[0] + self.radius * np.cos(np.pi/2 - new_state[2])
-        cy_r = new_state[1] - self.radius * np.sin(np.pi/2 - new_state[2])
-
-        tangent_pt_l = np.array([cx_l, cy_l]) + self.radius * np.array([np.cos(self.perpendicular_l), np.sin(self.perpendicular_l)])
-        tangent_pt_r = np.array([cx_r, cy_r]) + self.radius * np.array([np.cos(self.perpendicular_r), np.sin(self.perpendicular_r)])
-
-        max_y_r = cy_r + self.radius 
-        min_y_l = cy_l - self.radius
+        tangent_pt_l = centre_l + self.tangent_offset_l
+        tangent_pt_r = centre_r + self.tangent_offset_r
 
         axis.cla()
 
-        circle = plt.Circle((cx_r, cy_r), self.radius, fill=False, linewidth=2)
+        circle = plt.Circle(centre_l, self.radius, fill=False, linewidth=2)
         axis.add_artist(circle)
-        circle = plt.Circle((cx_l, cy_l), self.radius, fill=False, linewidth=2)
+        circle = plt.Circle(centre_r, self.radius, fill=False, linewidth=2)
         axis.add_artist(circle)
 
         axis.plot(state[0], state[1], 'ro')
@@ -166,26 +160,25 @@ class SafetyMask:
 
         state_line = [[state[0], state[1]], [new_state[0], new_state[1]]]
         if do_lines_intersect(self.line_l, state_line):
-            print("Projected crash with line 1")
+            print("Projected crash with left line")
             return -self.max_steer
         elif do_lines_intersect(self.line_r, state_line):
-            print("Projected with line 2")
+            print("Projected crash with right line")
             return self.max_steer
 
-        axis.plot([cx_l, tangent_pt_l[0]], [cy_l, tangent_pt_l[1]], 'g-')
-        axis.plot([cx_r, tangent_pt_r[0]], [cy_r, tangent_pt_r[1]], 'g-')
+        axis.plot([centre_l[0], tangent_pt_l[0]], [centre_l[1], tangent_pt_l[1]], 'g-')
+        axis.plot([centre_r[0], tangent_pt_r[0]], [centre_r[1], tangent_pt_r[1]], 'g-')
         axis.plot(tangent_pt_l[0], tangent_pt_l[1], 'go')
         axis.plot(tangent_pt_r[0], tangent_pt_r[1], 'go')
-        # if cx_r > new_state[0]: #! this 0.5 is magic and must be removed
-            # the centre to extreme point.
+
+
+        #TODO: add condition to only check intersection if it is in front of the vehicle.
         radial_line = [centre_l, tangent_pt_l]
         if do_lines_intersect(self.line_r, radial_line):
             print("Unsafe - right")
             axis.text(state[0]+2, 0, "Unsafe - right")
             return self.max_steer
 
-        # elif cx_l > new_state[0]:
-            # print(f"Checking for left intersection...... {cx_l}, {min_y_l}")
         radial_line = [centre_r, tangent_pt_r]
         if do_lines_intersect(self.line_l, radial_line):
             print("Unsafe - left")
